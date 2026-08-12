@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
-import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -27,12 +26,6 @@ import { JwtAuthGuard } from './presentation/http/auth/jwt-auth.guard';
       useFactory: () => bookingDatabaseOptions(),
     }),
     TypeOrmModule.forFeature([BookingOrmEntity]),
-    JwtModule.register({
-      secret: jwtSecret(),
-      signOptions: {
-        expiresIn: Number(process.env.AUTH_JWT_EXPIRES_IN_SECONDS ?? 3600),
-      },
-    }),
   ],
   controllers: [AppController, BookingController],
   providers: [
@@ -71,17 +64,3 @@ import { JwtAuthGuard } from './presentation/http/auth/jwt-auth.guard';
   ],
 })
 export class AppModule {}
-
-function jwtSecret() {
-  const configured = process.env.AUTH_JWT_SECRET?.trim();
-  if (configured) {
-    if (configured.length < 32) {
-      throw new Error('AUTH_JWT_SECRET debe tener al menos 32 caracteres');
-    }
-    return configured;
-  }
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('Falta AUTH_JWT_SECRET');
-  }
-  return 'petcare-local-development-secret-change-me';
-}
