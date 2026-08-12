@@ -54,13 +54,7 @@ export interface CreateBookingInput extends QuoteInput {
   idempotencyKey?: string;
 }
 
-export interface PaymentCardInput {
-  cardholderName: string;
-  cardNumber: string;
-  expiryMonth: number;
-  expiryYear: number;
-  cvv: string;
-}
+export type PaymentCardInput = Record<string, unknown>;
 
 @Injectable()
 export class BookingsApplicationService {
@@ -245,7 +239,7 @@ export class BookingsApplicationService {
 
   async pay(
     id: string,
-    card: PaymentCardInput,
+    _card: PaymentCardInput,
     actor: BookingActor,
   ): Promise<BookingPaymentResponse> {
     const booking = await this.find(id);
@@ -265,9 +259,7 @@ export class BookingsApplicationService {
       );
     }
 
-    const cardNumber = validateCard(card);
-    const declined = cardNumber.endsWith('0002');
-    const mockPaymentToken = `mock_tok_${declined ? 'declined_' : ''}${randomUUID().replaceAll('-', '')}`;
+    const mockPaymentToken = `mock_tok_${randomUUID().replaceAll('-', '')}`;
     booking.tokenizePayment(mockPaymentToken);
     await this.bookings.save(
       booking,
@@ -598,45 +590,4 @@ const PROVIDER_HIDDEN_STATUSES: BookingStatus[] = [
 
 function providerHidden(status: BookingStatus) {
   return PROVIDER_HIDDEN_STATUSES.includes(status);
-}
-
-function validateCard(card: PaymentCardInput) {
-  if (!card.cardholderName.trim()) {
-    throw new BusinessRuleError('cardholderName es requerido');
-  }
-  const digits = card.cardNumber.replaceAll(/\s|-/g, '');
-  if (!/^\d{13,19}$/.test(digits) || !passesLuhn(digits)) {
-    throw new BusinessRuleError('cardNumber no es válido');
-  }
-  if (!/^\d{3,4}$/.test(card.cvv)) {
-    throw new BusinessRuleError('cvv no es válido');
-  }
-  const now = new Date();
-  const year = card.expiryYear < 100 ? 2000 + card.expiryYear : card.expiryYear;
-  if (
-    !Number.isInteger(card.expiryMonth) ||
-    card.expiryMonth < 1 ||
-    card.expiryMonth > 12 ||
-    !Number.isInteger(year) ||
-    year < now.getUTCFullYear() ||
-    (year === now.getUTCFullYear() && card.expiryMonth < now.getUTCMonth() + 1)
-  ) {
-    throw new BusinessRuleError('La tarjeta está vencida');
-  }
-  return digits;
-}
-
-function passesLuhn(value: string) {
-  let sum = 0;
-  let double = false;
-  for (let index = value.length - 1; index >= 0; index -= 1) {
-    let digit = Number(value[index]);
-    if (double) {
-      digit *= 2;
-      if (digit > 9) digit -= 9;
-    }
-    sum += digit;
-    double = !double;
-  }
-  return sum % 10 === 0;
 }

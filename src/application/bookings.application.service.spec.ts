@@ -116,26 +116,25 @@ describe('BookingsApplicationService provisional flow', () => {
     expect(fixture.events[1].data).not.toHaveProperty('mockPaymentToken');
   });
 
-  it('encodes a decline without retaining the declined card', async () => {
+  it('accepts arbitrary mock card values without validating or retaining them', async () => {
     const fixture = setup();
     const created = await fixture.service.create('user_1', onlineInput());
 
     const result = await fixture.service.pay(
       created.id,
       {
-        cardholderName: 'Declined Test',
-        cardNumber: '4000000000000002',
-        expiryMonth: 12,
-        expiryYear: 2030,
-        cvv: '123',
+        cardholderName: '',
+        cardNumber: 'not-a-card',
+        expiryMonth: 0,
+        expiryYear: 0,
+        cvv: '',
       },
       owner(),
     );
 
-    expect(result.payment.mockPaymentToken).toMatch(
-      /^mock_tok_declined_[A-Za-z0-9_-]+$/,
-    );
-    expect(JSON.stringify(fixture.events)).not.toContain('4000000000000002');
+    expect(result.payment.mockPaymentToken).toMatch(/^mock_tok_[A-Za-z0-9_-]+$/);
+    expect(result.payment.mockPaymentToken).not.toContain('declined');
+    expect(JSON.stringify(fixture.events)).not.toContain('not-a-card');
   });
 
   it('marks payment paid before confirming while preserving command checks', async () => {

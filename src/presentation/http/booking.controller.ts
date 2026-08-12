@@ -169,13 +169,9 @@ export class BookingController {
   @ApiBody({
     schema: {
       type: 'object',
-      required: [
-        'cardholderName',
-        'cardNumber',
-        'expiryMonth',
-        'expiryYear',
-        'cvv',
-      ],
+      additionalProperties: true,
+      description:
+        'Datos mock opcionales; Booking no valida ni persiste información de tarjeta.',
     },
   })
   async pay(
@@ -254,14 +250,8 @@ function asCreateInput(body: Record<string, unknown>): CreateBookingInput {
   };
 }
 
-function asPaymentCardInput(body: Record<string, unknown>) {
-  return {
-    cardholderName: requiredString(body.cardholderName),
-    cardNumber: requiredString(body.cardNumber),
-    expiryMonth: requiredNumber(body.expiryMonth),
-    expiryYear: requiredNumber(body.expiryYear),
-    cvv: requiredString(body.cvv),
-  };
+function asPaymentCardInput(_body: Record<string, unknown>) {
+  return {};
 }
 
 function requiredString(value: unknown) {

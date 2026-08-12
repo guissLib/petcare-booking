@@ -56,6 +56,7 @@ export class ConfirmBookingHandler implements ICommandHandler<ConfirmBookingComm
   constructor(private readonly bookings: BookingsApplicationService) {}
 
   execute(command: ConfirmBookingCommand) {
+    // throw new Error('Not implemented');
     return this.bookings.confirmFromPaymentCommand(command.message);
   }
 }
