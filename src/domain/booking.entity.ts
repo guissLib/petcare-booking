@@ -1,6 +1,9 @@
 import { BusinessRuleError } from './business-rule.error';
 
 export type BookingStatus =
+  | 'provisional'
+  | 'awaiting-payment-token'
+  | 'payment-processing'
   | 'pending'
   | 'pending-confirmation'
   | 'confirmed'
@@ -22,6 +25,7 @@ export type VisitMode = 'pickup-dropoff' | 'home-visit' | 'at-location';
 
 export interface BookingPrimitives {
   id: string;
+  aggregateVersion: number;
   userId: string;
   petId: string;
   providerId: string;
@@ -42,6 +46,7 @@ export interface BookingPrimitives {
   paymentId: string;
   paymentStatus: PaymentStatus;
   paymentReference?: string;
+  mockPaymentToken?: string;
   paymentExpiresAt?: string;
   idempotencyKey?: string;
   promotionId?: string;
@@ -51,8 +56,9 @@ export interface BookingPrimitives {
 
 export type NewBooking = Omit<
   BookingPrimitives,
-  'status' | 'paymentStatus' | 'currency'
+  'aggregateVersion' | 'status' | 'paymentStatus' | 'currency'
 > & {
+  aggregateVersion?: number;
   status?: BookingStatus;
   paymentStatus?: PaymentStatus;
   currency?: 'COP';
@@ -66,10 +72,10 @@ export class Booking {
       ...normalize(input),
       status:
         input.status ??
-        (input.paymentMethod === 'online' ? 'pending' : 'confirmed'),
-      paymentStatus:
-        input.paymentStatus ??
-        (input.paymentMethod === 'online' ? 'pending' : 'paid'),
+        (input.paymentMethod === 'online'
+          ? 'awaiting-payment-token'
+          : 'provisional'),
+      paymentStatus: input.paymentStatus ?? 'pending',
       currency: 'COP',
     });
     booking.validate();
@@ -77,28 +83,28 @@ export class Booking {
   }
 
   static rehydrate(input: BookingPrimitives) {
-    return new Booking({ ...input });
+    return new Booking({
+      ...input,
+      aggregateVersion: input.aggregateVersion ?? 1,
+    });
   }
 
-  markPaymentProcessing(paymentReference?: string) {
-    if (
-      this.props.status === 'confirmed' ||
-      this.props.status === 'pending-confirmation'
-    ) {
-      this.props.paymentStatus = 'paid';
-      this.props.paymentReference =
-        paymentReference?.trim() || this.props.paymentReference;
-      return;
+  tokenizePayment(mockPaymentToken: string) {
+    if (this.props.mockPaymentToken) {
+      return this.props.mockPaymentToken;
     }
-    if (this.props.status !== 'pending') {
+    if (this.props.status !== 'awaiting-payment-token') {
       throw new BusinessRuleError(
-        `No se puede procesar el pago desde ${this.props.status}`,
+        `No se puede tokenizar el pago desde ${this.props.status}`,
       );
     }
-    this.props.status = 'pending-confirmation';
-    this.props.paymentStatus = 'paid';
-    this.props.paymentReference = paymentReference?.trim() || undefined;
-    this.props.paymentExpiresAt = undefined;
+    if (!/^mock_tok_[A-Za-z0-9_-]+$/.test(mockPaymentToken)) {
+      throw new BusinessRuleError('El token mock no es válido');
+    }
+    this.props.mockPaymentToken = mockPaymentToken;
+    this.props.status = 'payment-processing';
+    this.bumpVersion();
+    return mockPaymentToken;
   }
 
   confirmFromPayment(paymentId: string, amount: number) {
@@ -111,13 +117,20 @@ export class Booking {
       return;
     }
     if (
-      !['pending', 'pending-confirmation'].includes(this.props.status) ||
-      this.props.paymentStatus !== 'paid'
+      ![
+        'provisional',
+        'awaiting-payment-token',
+        'payment-processing',
+        'pending',
+        'pending-confirmation',
+      ].includes(this.props.status)
     ) {
       throw new BusinessRuleError('La reserva no está lista para confirmarse');
     }
+    this.props.paymentStatus = 'paid';
     this.props.status = 'confirmed';
     this.props.paymentExpiresAt = undefined;
+    this.bumpVersion();
   }
 
   cancel(reason = 'Compensación de la reserva Saga') {
@@ -134,6 +147,7 @@ export class Booking {
     this.props.status = 'cancelled';
     this.props.rejectionReason = reason.trim() || 'Reserva cancelada';
     this.props.paymentExpiresAt = undefined;
+    this.bumpVersion();
   }
 
   changeStatus(status: BookingStatus, reason?: string) {
@@ -148,6 +162,9 @@ export class Booking {
       }
     }
     const transitions: Record<BookingStatus, BookingStatus[]> = {
+      provisional: ['cancelled'],
+      'awaiting-payment-token': ['cancelled'],
+      'payment-processing': ['cancelled'],
       pending: ['pending-confirmation', 'rejected', 'cancelled'],
       'pending-confirmation': ['confirmed', 'cancelled'],
       confirmed: ['in-progress', 'rejected', 'cancelled'],
@@ -165,13 +182,17 @@ export class Booking {
     if (status === 'rejected') {
       this.props.rejectionReason = reason?.trim() || 'Requisitos no cumplidos';
     }
+    this.bumpVersion();
   }
 
   isPaymentExpired(at = new Date()) {
     return (
-      this.props.status === 'pending' &&
-      !!this.props.paymentExpiresAt &&
-      new Date(this.props.paymentExpiresAt) <= at
+      (this.props.status === 'pending' &&
+        !!this.props.paymentExpiresAt &&
+        new Date(this.props.paymentExpiresAt) <= at) ||
+      (this.props.status === 'awaiting-payment-token' &&
+        !!this.props.paymentExpiresAt &&
+        new Date(this.props.paymentExpiresAt) <= at)
     );
   }
 
@@ -195,15 +216,15 @@ export class Booking {
     return this.props.status;
   }
 
+  get aggregateVersion() {
+    return this.props.aggregateVersion;
+  }
+
+  private bumpVersion() {
+    this.props.aggregateVersion += 1;
+  }
+
   private validate() {
-    if (
-      this.props.paymentMethod === 'at-location' &&
-      this.props.paymentStatus !== 'paid'
-    ) {
-      throw new BusinessRuleError(
-        'Una reserva at-location requiere un pago registrado',
-      );
-    }
     if (
       this.props.paymentMethod === 'online' &&
       this.props.status === 'confirmed' &&
@@ -257,6 +278,7 @@ function normalize(input: NewBooking): BookingPrimitives {
   return {
     ...input,
     id: input.id.trim(),
+    aggregateVersion: Math.max(1, Math.trunc(input.aggregateVersion ?? 1)),
     userId: input.userId.trim(),
     petId: input.petId.trim(),
     providerId: input.providerId.trim(),
@@ -266,6 +288,7 @@ function normalize(input: NewBooking): BookingPrimitives {
     notes: input.notes?.trim() || undefined,
     paymentId: input.paymentId.trim(),
     paymentReference: input.paymentReference?.trim() || undefined,
+    mockPaymentToken: input.mockPaymentToken?.trim() || undefined,
     idempotencyKey: input.idempotencyKey?.trim() || undefined,
     originalTotal,
     total,

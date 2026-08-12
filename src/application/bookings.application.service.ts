@@ -15,15 +15,19 @@ import {
   type BookingContextPort,
 } from './ports/booking-context.port';
 import {
-  PAYMENT_SERVICE,
-  type PaymentCardInput,
-  type PaymentServicePort,
-} from './ports/payment-service.port';
-import type { SagaMessage } from './contracts/saga-message.contract';
+  createSagaMessage,
+  type SagaMessage,
+} from './contracts/saga-message.contract';
 import {
   BOOKING_REPOSITORY,
+  type BookingPagination,
   type BookingRepositoryPort,
 } from './ports/booking.repository';
+import { createBookingEvent } from './contracts/booking-event.contract';
+import type {
+  BookingPaymentResponse,
+  BookingResponse,
+} from './contracts/booking-response';
 
 export interface BookingActor {
   id: string;
@@ -50,6 +54,14 @@ export interface CreateBookingInput extends QuoteInput {
   idempotencyKey?: string;
 }
 
+export interface PaymentCardInput {
+  cardholderName: string;
+  cardNumber: string;
+  expiryMonth: number;
+  expiryYear: number;
+  cvv: string;
+}
+
 @Injectable()
 export class BookingsApplicationService {
   constructor(
@@ -57,8 +69,6 @@ export class BookingsApplicationService {
     private readonly bookings: BookingRepositoryPort,
     @Inject(BOOKING_CONTEXT)
     private readonly context: BookingContextPort,
-    @Inject(PAYMENT_SERVICE)
-    private readonly payments: PaymentServicePort,
   ) {}
 
   async quote(userId: string, input: QuoteInput, enforceVaccination = false) {
@@ -127,12 +137,7 @@ export class BookingsApplicationService {
 
     const quote = await this.quote(userId, input, true);
     const bookingId = `booking_${randomUUID()}`;
-    const payment = await this.payments.createIntent({
-      bookingId,
-      userId,
-      amount: quote.total,
-      method: input.paymentMethod,
-    });
+    const paymentId = `payment_${randomUUID()}`;
     const booking = Booking.create({
       id: bookingId,
       userId,
@@ -150,9 +155,7 @@ export class BookingsApplicationService {
       originalTotal: quote.originalTotal,
       discountAmount: quote.discountAmount,
       paymentMethod: input.paymentMethod,
-      paymentId: payment.id,
-      paymentStatus: payment.status,
-      paymentReference: payment.reference,
+      paymentId,
       paymentExpiresAt:
         input.paymentMethod === 'online'
           ? new Date(Date.now() + 30 * 60 * 1000).toISOString()
@@ -161,25 +164,28 @@ export class BookingsApplicationService {
       promotionId: quote.promotionId,
       createdAt: new Date().toISOString(),
     });
-    try {
-      await this.bookings.save(booking);
-    } catch (error) {
-      await this.payments.cancelPending(payment.id).catch(() => undefined);
-      throw error;
-    }
-    if (input.paymentMethod === 'at-location') {
-      await this.payments.confirmAtLocation({
-        bookingId: booking.id,
-        userId,
-        providerId: booking.providerId,
-        paymentId: payment.id,
-        amount: booking.toPrimitives().total,
-      });
-    }
+    await this.bookings.save(
+      booking,
+      createBookingEvent(booking, 'booking.requested', {
+        integrationMessage: createSagaMessage('booking.requested', undefined, {
+          bookingId,
+          paymentId,
+          userId,
+          providerId: booking.providerId,
+          amount: booking.toPrimitives().total,
+          currency: 'COP',
+          paymentMethod: input.paymentMethod,
+        }),
+      }),
+    );
     return this.toResponse(booking);
   }
 
-  async list(actor: BookingActor, status?: BookingStatus) {
+  async list(
+    actor: BookingActor,
+    status?: BookingStatus,
+    pagination?: BookingPagination,
+  ) {
     if (actor.role === 'provider' && !actor.providerId) {
       throw new BusinessRuleError(
         'El token del proveedor no contiene providerId',
@@ -191,12 +197,11 @@ export class BookingsApplicationService {
         : actor.role === 'administrator'
           ? { status }
           : { userId: actor.id, status };
-    const bookings = await this.bookings.findAll(filters);
+    const bookings = await this.bookings.findAll(filters, pagination);
     return bookings
       .filter(
         (booking) =>
-          actor.role !== 'provider' ||
-          !['pending', 'pending-confirmation'].includes(booking.status),
+          actor.role !== 'provider' || !providerHidden(booking.status),
       )
       .map((booking) => this.toResponse(booking));
   }
@@ -216,7 +221,10 @@ export class BookingsApplicationService {
     const booking = await this.find(id);
     this.assertAccess(booking, actor);
     booking.changeStatus(status, reason);
-    await this.bookings.save(booking);
+    await this.bookings.save(
+      booking,
+      createBookingEvent(booking, 'booking.status-changed'),
+    );
     return this.toResponse(booking);
   }
 
@@ -235,7 +243,11 @@ export class BookingsApplicationService {
     };
   }
 
-  async pay(id: string, card: PaymentCardInput, actor: BookingActor) {
+  async pay(
+    id: string,
+    card: PaymentCardInput,
+    actor: BookingActor,
+  ): Promise<BookingPaymentResponse> {
     const booking = await this.find(id);
     this.assertAccess(booking, actor);
     const data = booking.toPrimitives();
@@ -244,36 +256,32 @@ export class BookingsApplicationService {
         'Las reservas at-location no requieren checkout online',
       );
     }
-    if (!['pending', 'pending-confirmation'].includes(data.status)) {
+    if (data.mockPaymentToken) {
+      return this.toPaymentResponse(booking, data.mockPaymentToken);
+    }
+    if (data.status !== 'awaiting-payment-token') {
       throw new BusinessRuleError(
-        'La reserva no está disponible para procesar el pago',
+        'La reserva no está disponible para tokenizar el pago',
       );
     }
-    const payment = await this.payments.charge({
-      bookingId: booking.id,
-      userId: booking.userId,
-      providerId: booking.providerId,
-      paymentId: data.paymentId,
-      amount: data.total,
-      card,
-    });
-    if (payment.status === 'paid') {
-      booking.markPaymentProcessing(payment.reference);
-      await this.bookings.save(booking);
-      await this.payments.publishConfirmed({
-        bookingId: booking.id,
-        userId: booking.userId,
-        providerId: booking.providerId,
-        paymentId: data.paymentId,
-        amount: data.total,
-      });
-    }
-    return {
-      booking: this.toResponse(booking),
-      payment,
-      confirmationStatus:
-        payment.status === 'paid' ? 'pending-confirmation' : 'failed',
-    };
+
+    const cardNumber = validateCard(card);
+    const declined = cardNumber.endsWith('0002');
+    const mockPaymentToken = `mock_tok_${declined ? 'declined_' : ''}${randomUUID().replaceAll('-', '')}`;
+    booking.tokenizePayment(mockPaymentToken);
+    await this.bookings.save(
+      booking,
+      createBookingEvent(booking, 'booking.payment-tokenized', {
+        integrationMessage: createSagaMessage('payment.tokenized', undefined, {
+          bookingId: booking.id,
+          paymentId: data.paymentId,
+          userId: booking.userId,
+          providerId: booking.providerId,
+          mockPaymentToken,
+        }),
+      }),
+    );
+    return this.toPaymentResponse(booking, mockPaymentToken);
   }
 
   async confirmFromPaymentCommand(message: SagaMessage) {
@@ -281,20 +289,33 @@ export class BookingsApplicationService {
     const bookingId = requiredMessageText(message.bookingId, 'bookingId');
     const amount = requiredMessageNumber(message.amount, 'amount');
     const booking = await this.find(bookingId);
-    if (booking.toPrimitives().paymentStatus !== 'paid') {
-      throw new BusinessRuleError(
-        'La reserva no tiene registrado un pago aprobado',
+    const previousVersion = booking.aggregateVersion;
+    booking.confirmFromPayment(paymentId, amount);
+    if (booking.aggregateVersion !== previousVersion) {
+      await this.bookings.save(
+        booking,
+        createBookingEvent(booking, 'booking.confirmed', {
+          causationId: message.eventId,
+        }),
       );
     }
-    booking.confirmFromPayment(paymentId, amount);
-    await this.bookings.save(booking);
     return this.toResponse(booking);
   }
 
-  async cancelFromSaga(bookingId: string, reason?: string) {
+  async cancelFromSaga(
+    bookingId: string,
+    reason?: string,
+    causationId?: string,
+  ) {
     const booking = await this.find(bookingId);
+    const previousVersion = booking.aggregateVersion;
     booking.cancel(reason);
-    await this.bookings.save(booking);
+    if (booking.aggregateVersion !== previousVersion) {
+      await this.bookings.save(
+        booking,
+        createBookingEvent(booking, 'booking.cancelled', { causationId }),
+      );
+    }
     return this.toResponse(booking);
   }
 
@@ -314,8 +335,8 @@ export class BookingsApplicationService {
     };
   }
 
-  async expirePendingPayments() {
-    return this.bookings.expirePending();
+  async expirePendingPayments(now?: Date) {
+    return this.bookings.expirePending(now);
   }
 
   private async resolveContext(
@@ -393,7 +414,7 @@ export class BookingsApplicationService {
       return;
     }
     if (actor.role === 'provider' && booking.providerId === actor.providerId) {
-      if (['pending', 'pending-confirmation'].includes(booking.status)) {
+      if (providerHidden(booking.status)) {
         throw new BusinessRuleError(
           'La reserva aún no está disponible para el proveedor',
         );
@@ -406,10 +427,12 @@ export class BookingsApplicationService {
     throw new BusinessRuleError('No tiene acceso a esta reserva');
   }
 
-  private toResponse(booking: Booking) {
+  private toResponse(booking: Booking): BookingResponse {
     const primitives = booking.toPrimitives();
+    const safePrimitives = { ...primitives };
+    delete safePrimitives.mockPaymentToken;
     return {
-      ...primitives,
+      ...safePrimitives,
       scheduledAt: primitives.scheduledAt,
       payment: {
         id: primitives.paymentId,
@@ -423,6 +446,21 @@ export class BookingsApplicationService {
           `PENDING-${primitives.paymentId.slice(0, 12)}`,
         createdAt: primitives.createdAt,
       },
+    };
+  }
+
+  private toPaymentResponse(
+    booking: Booking,
+    mockPaymentToken: string,
+  ): BookingPaymentResponse {
+    return {
+      booking: this.toResponse(booking),
+      payment: {
+        id: booking.toPrimitives().paymentId,
+        status: 'tokenized',
+        mockPaymentToken,
+      },
+      confirmationStatus: 'payment-processing',
     };
   }
 }
@@ -548,4 +586,57 @@ function requiredMessageNumber(value: unknown, field: string) {
     throw new BusinessRuleError(`El mensaje no contiene ${field}`);
   }
   return value;
+}
+
+const PROVIDER_HIDDEN_STATUSES: BookingStatus[] = [
+  'provisional',
+  'awaiting-payment-token',
+  'payment-processing',
+  'pending',
+  'pending-confirmation',
+];
+
+function providerHidden(status: BookingStatus) {
+  return PROVIDER_HIDDEN_STATUSES.includes(status);
+}
+
+function validateCard(card: PaymentCardInput) {
+  if (!card.cardholderName.trim()) {
+    throw new BusinessRuleError('cardholderName es requerido');
+  }
+  const digits = card.cardNumber.replaceAll(/\s|-/g, '');
+  if (!/^\d{13,19}$/.test(digits) || !passesLuhn(digits)) {
+    throw new BusinessRuleError('cardNumber no es válido');
+  }
+  if (!/^\d{3,4}$/.test(card.cvv)) {
+    throw new BusinessRuleError('cvv no es válido');
+  }
+  const now = new Date();
+  const year = card.expiryYear < 100 ? 2000 + card.expiryYear : card.expiryYear;
+  if (
+    !Number.isInteger(card.expiryMonth) ||
+    card.expiryMonth < 1 ||
+    card.expiryMonth > 12 ||
+    !Number.isInteger(year) ||
+    year < now.getUTCFullYear() ||
+    (year === now.getUTCFullYear() && card.expiryMonth < now.getUTCMonth() + 1)
+  ) {
+    throw new BusinessRuleError('La tarjeta está vencida');
+  }
+  return digits;
+}
+
+function passesLuhn(value: string) {
+  let sum = 0;
+  let double = false;
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    let digit = Number(value[index]);
+    if (double) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+    double = !double;
+  }
+  return sum % 10 === 0;
 }

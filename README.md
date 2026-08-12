@@ -22,6 +22,10 @@ frontend se usa `http://localhost:3000/api`.
 - Cotizar y crear reservas.
 - Consultar reservas, estados, recordatorios y checkout mock.
 - Persistir Booking en su base MySQL privada.
+- Mantener la base normalizada como modelo de escritura autoritativo.
+- Publicar cambios mediante `booking_event_outbox` y RabbitMQ.
+- Proyectar `booking_overview` a un segundo MySQL documental cuando el read
+  model esté habilitado.
 - Consumir comandos `booking.confirm` y `booking.cancel`.
 - Validar contexto mediante `PETCARE_BACKEND_URL`.
 - Solicitar y procesar Payment mediante contratos internos protegidos por
@@ -43,6 +47,39 @@ acepta JWT directo desde clientes.
 Las confirmaciones de pago son asíncronas: después de persistir el estado local,
 Payment publica `payment.confirmed`, el orquestador envía `booking.confirm` y
 este servicio confirma la reserva de forma idempotente.
+
+## CQRS incremental
+
+El command side usa la base `BOOKING_MYSQL_*`, transacciones y versionado
+optimista (`aggregate_version`). Los handlers de comandos nunca dependen del
+read model: disponibilidad, cotización, pago, ownership y transiciones se
+validan contra la base normalizada.
+
+Para habilitar el read side de forma controlada:
+
+```bash
+BOOKING_READ_MODEL_ENABLED=true
+BOOKING_READ_MODEL_READS_ENABLED=false
+npm run migration:read:run
+npm run read:backfill
+BOOKING_READ_MODEL_READS_ENABLED=true
+```
+
+`BOOKING_READ_MYSQL_*` debe apuntar a una base/esquema separado y a un usuario
+con permisos de proyección; `BOOKING_READ_QUERY_MYSQL_*` puede usar un usuario
+solo lectura para las consultas HTTP. Mientras `BOOKING_READ_MODEL_READS_ENABLED` sea falso,
+`GET /bookings` y `GET /bookings/:id` usan automáticamente la base de escritura.
+Si una consulta proyectada no está disponible, también existe fallback temporal
+al repositorio normalizado. Los comandos continúan usando siempre el write
+model incluso después del cutover.
+
+El documento JSON `booking_overview` contiene estados, importes, fechas, IDs y
+resúmenes de pago. Nunca se proyectan número de tarjeta, CVV, hashes de
+contraseña, BLOB de vacunación, claves de idempotencia ni la dirección privada
+de una reserva.
+
+El endpoint interno `GET /internal/read-model/metrics` devuelve eventos
+procesados y lag de proyección; requiere `x-booking-internal-secret`.
 
 ## Pruebas
 

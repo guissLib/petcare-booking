@@ -4,7 +4,9 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { BookingsApplicationService } from './bookings.application.service';
+import { CommandBus } from '@nestjs/cqrs';
+import { ExpirePendingBookingsCommand } from './commands/booking.commands';
+import type { Booking } from '../domain/booking.entity';
 
 @Injectable()
 export class PendingBookingExpirationScheduler
@@ -13,7 +15,7 @@ export class PendingBookingExpirationScheduler
   private readonly logger = new Logger(PendingBookingExpirationScheduler.name);
   private timer?: NodeJS.Timeout;
 
-  constructor(private readonly bookings: BookingsApplicationService) {}
+  constructor(private readonly commands: CommandBus) {}
 
   onModuleInit() {
     const interval = Number(process.env.BOOKING_EXPIRATION_POLL_MS ?? 60_000);
@@ -33,7 +35,9 @@ export class PendingBookingExpirationScheduler
 
   private async expire() {
     try {
-      const expired = await this.bookings.expirePendingPayments();
+      const expired = await this.commands.execute<Booking[]>(
+        new ExpirePendingBookingsCommand(new Date()),
+      );
       if (expired.length > 0) {
         this.logger.log(
           `Reservas expiradas por falta de pago: ${expired.length}`,

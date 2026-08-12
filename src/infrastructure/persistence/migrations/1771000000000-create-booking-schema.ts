@@ -9,6 +9,12 @@ export class CreateBookingSchema1771000000000 implements MigrationInterface {
         name: 'bookings',
         columns: [
           { name: 'id', type: 'varchar', length: '64', isPrimary: true },
+          {
+            name: 'aggregate_version',
+            type: 'int',
+            unsigned: true,
+            default: 1,
+          },
           { name: 'user_id', type: 'varchar', length: '64' },
           { name: 'pet_id', type: 'varchar', length: '64' },
           { name: 'provider_id', type: 'varchar', length: '64' },

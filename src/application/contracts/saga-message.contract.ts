@@ -1,12 +1,20 @@
 import { randomUUID } from 'node:crypto';
 
 export type SagaMessageName =
+  | 'booking.requested'
+  | 'payment.tokenized'
+  | 'payment.intent.create'
+  | 'payment.intent.created'
+  | 'payment.intent.failed'
+  | 'payment.capture-token'
+  | 'payment.capture.failed'
+  | 'payment.confirm-at-location'
   | 'payment.confirmed'
   | 'booking.confirm'
-  | 'booking.cancel'
   | 'booking.confirmed'
-  | 'booking.cancelled'
   | 'booking.confirmation.failed'
+  | 'booking.cancel'
+  | 'booking.cancelled'
   | 'booking.cancellation.failed'
   | 'payment.refund'
   | 'payment.refunded'
@@ -28,6 +36,9 @@ export interface SagaMessage {
   currency?: string;
   reason?: string;
   attempt?: number;
+  paymentMethod?: 'online' | 'at-location';
+  mockPaymentToken?: string;
+  retryable?: boolean;
   [key: string]: unknown;
 }
 

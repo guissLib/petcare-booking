@@ -1,10 +1,15 @@
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { CommandBus } from '@nestjs/cqrs';
 import {
   createSagaMessage,
   type SagaMessage,
 } from './contracts/saga-message.contract';
 import { MESSAGE_BUS, type MessageBus } from './ports/message-bus.port';
-import { BookingsApplicationService } from './bookings.application.service';
+import {
+  CancelBookingCommand,
+  ConfirmBookingCommand,
+} from './commands/booking.commands';
+import type { BookingResponse } from './contracts/booking-response';
 
 @Injectable()
 export class BookingSagaConsumer implements OnModuleInit {
@@ -12,7 +17,7 @@ export class BookingSagaConsumer implements OnModuleInit {
 
   constructor(
     @Inject(MESSAGE_BUS) private readonly messages: MessageBus,
-    private readonly bookings: BookingsApplicationService,
+    private readonly commands: CommandBus,
   ) {}
 
   onModuleInit() {
@@ -28,7 +33,9 @@ export class BookingSagaConsumer implements OnModuleInit {
 
   private async confirm(message: SagaMessage) {
     try {
-      const booking = await this.bookings.confirmFromPaymentCommand(message);
+      const booking = await this.commands.execute<BookingResponse>(
+        new ConfirmBookingCommand(message),
+      );
       await this.messages.publish(
         createSagaMessage('booking.confirmed', message.sagaId, {
           bookingId: booking.id,
@@ -61,9 +68,8 @@ export class BookingSagaConsumer implements OnModuleInit {
       if (!bookingId) {
         throw new Error('Mensaje Saga sin bookingId');
       }
-      const booking = await this.bookings.cancelFromSaga(
-        bookingId,
-        message.reason,
+      const booking = await this.commands.execute<BookingResponse>(
+        new CancelBookingCommand(bookingId, message.reason, message.eventId),
       );
       await this.messages.publish(
         createSagaMessage('booking.cancelled', message.sagaId, {

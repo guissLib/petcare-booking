@@ -4,6 +4,7 @@ import type {
 } from '../bookings.application.service';
 
 export const BOOKING_CONTEXT = Symbol('BOOKING_CONTEXT');
+export const BOOKING_CONTEXT_CATALOG = Symbol('BOOKING_CONTEXT_CATALOG');
 
 export interface BookingContextUser {
   id: string;
@@ -13,17 +14,27 @@ export interface BookingContextUser {
 export interface BookingContextPet {
   id: string;
   ownerId: string;
+  name?: string;
+  species?: 'dog' | 'cat' | 'bird' | 'other';
+  breed?: string;
+  weightKg?: number;
   vaccinationRecords: {
     id: string;
     vaccine: string;
     administeredAt: string;
     expiresAt?: string;
+    documentMimeType?: string;
   }[];
 }
 
 export interface BookingContextProvider {
   id: string;
+  name?: string;
+  type?: 'employee' | 'contractor' | 'franchise';
   city: string;
+  address?: string;
+  latitude?: number;
+  longitude?: number;
   capacity: number;
   acceptsHomeVisits: boolean;
   services: string[];
@@ -57,4 +68,22 @@ export interface BookingContextPort {
     userId: string,
     input: QuoteInput | CreateBookingInput,
   ): Promise<BookingContext>;
+}
+
+export interface BookingContextActor {
+  id: string;
+  role: 'pet-owner' | 'provider' | 'administrator';
+  providerId?: string;
+  city?: string;
+}
+
+export interface BookingContextCatalogPort {
+  listPets(
+    actor: BookingContextActor,
+    ownerId?: string,
+  ): Promise<BookingContextPet[]>;
+  listProviders(actor: BookingContextActor): Promise<BookingContextProvider[]>;
+  listPromotions(
+    actor: BookingContextActor,
+  ): Promise<BookingContextPromotion[]>;
 }

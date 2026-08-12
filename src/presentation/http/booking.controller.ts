@@ -11,19 +11,38 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
+import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import {
   ApiBearerAuth,
   ApiBody,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 import {
-  BookingsApplicationService,
   type BookingActor,
   type CreateBookingInput,
   type QuoteInput,
 } from '../../application/bookings.application.service';
+import type {
+  BookingAvailabilityResponse,
+  BookingPaymentResponse,
+  BookingQuoteResponse,
+  BookingResponse,
+} from '../../application/contracts/booking-response';
+import {
+  CreateBookingCommand,
+  PayBookingCommand,
+  ScheduleBookingReminderCommand,
+  UpdateBookingStatusCommand,
+} from '../../application/commands/booking.commands';
+import {
+  CheckAvailabilityQuery,
+  GetBookingQuery,
+  ListBookingsQuery,
+  QuoteBookingQuery,
+} from '../../application/queries/booking.queries';
 import type { BookingStatus } from '../../domain/booking.entity';
 import {
   actorFromRequest,
@@ -35,7 +54,10 @@ import { Public } from './auth/public.decorator';
 @ApiBearerAuth()
 @Controller()
 export class BookingController {
-  constructor(private readonly bookings: BookingsApplicationService) {}
+  constructor(
+    private readonly commands: CommandBus,
+    private readonly queries: QueryBus,
+  ) {}
 
   @Post('users/:userId/bookings/quote')
   @ApiOperation({ summary: 'Calcula el importe de una reserva' })
@@ -58,7 +80,9 @@ export class BookingController {
     @Req() request: AuthenticatedRequest,
   ) {
     this.assertUserPath(userId, actorFromRequest(request));
-    return this.bookings.quote(userId, asQuoteInput(body));
+    return this.queries.execute<BookingQuoteResponse>(
+      new QuoteBookingQuery(userId, asQuoteInput(body)),
+    );
   }
 
   @Post('users/:userId/bookings')
@@ -70,22 +94,37 @@ export class BookingController {
     @Req() request: AuthenticatedRequest,
   ) {
     this.assertUserPath(userId, actorFromRequest(request));
-    return this.bookings.create(userId, asCreateInput(body));
+    return this.commands.execute<BookingResponse>(
+      new CreateBookingCommand(userId, asCreateInput(body)),
+    );
   }
 
   @Get('bookings')
   @ApiOperation({ summary: 'Lista las reservas del usuario o proveedor' })
+  @ApiQuery({ name: 'status', required: false })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'pageSize', required: false, example: 50, maximum: 100 })
   async list(
     @Query('status') status: BookingStatus | undefined,
+    @Query('page') page: string | undefined,
+    @Query('pageSize') pageSize: string | undefined,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.bookings.list(actorFromRequest(request), status);
+    return this.queries.execute<BookingResponse[]>(
+      new ListBookingsQuery(
+        actorFromRequest(request),
+        status,
+        paginationFromQuery(page, pageSize),
+      ),
+    );
   }
 
   @Get('bookings/:id')
   @ApiOperation({ summary: 'Obtiene una reserva' })
   async get(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
-    return this.bookings.get(id, actorFromRequest(request));
+    return this.queries.execute<BookingResponse>(
+      new GetBookingQuery(id, actorFromRequest(request)),
+    );
   }
 
   @Patch('bookings/:id/status')
@@ -98,11 +137,13 @@ export class BookingController {
     if (!body.status) {
       throw new ForbiddenException('status es requerido');
     }
-    return this.bookings.updateStatus(
-      id,
-      body.status,
-      actorFromRequest(request),
-      body.reason,
+    return this.commands.execute<BookingResponse>(
+      new UpdateBookingStatusCommand(
+        id,
+        body.status,
+        actorFromRequest(request),
+        body.reason,
+      ),
     );
   }
 
@@ -113,7 +154,11 @@ export class BookingController {
     @Param('id') id: string,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.bookings.reminder(id, actorFromRequest(request));
+    return this.commands.execute<{
+      bookingId: string;
+      scheduled: boolean;
+      message: string;
+    }>(new ScheduleBookingReminderCommand(id, actorFromRequest(request)));
   }
 
   @Post('bookings/:id/payments/mock')
@@ -138,10 +183,12 @@ export class BookingController {
     @Body() body: Record<string, unknown>,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.bookings.pay(
-      id,
-      asPaymentCardInput(body),
-      actorFromRequest(request),
+    return this.commands.execute<BookingPaymentResponse>(
+      new PayBookingCommand(
+        id,
+        asPaymentCardInput(body),
+        actorFromRequest(request),
+      ),
     );
   }
 
@@ -159,7 +206,9 @@ export class BookingController {
     if (!date || !Number.isInteger(parsedCapacity) || parsedCapacity <= 0) {
       throw new ForbiddenException('date y capacity son requeridos');
     }
-    return this.bookings.availability(providerId, date, parsedCapacity);
+    return this.queries.execute<BookingAvailabilityResponse>(
+      new CheckAvailabilityQuery(providerId, date, parsedCapacity),
+    );
   }
 
   private assertInternal(secret: string | undefined) {
@@ -237,4 +286,21 @@ function optionalNumber(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value)
     ? value
     : undefined;
+}
+
+function paginationFromQuery(
+  page: string | undefined,
+  pageSize: string | undefined,
+) {
+  const parsedPage = positiveInteger(page, 1);
+  const parsedPageSize = Math.min(100, positiveInteger(pageSize, 50));
+  return {
+    page: parsedPage,
+    pageSize: parsedPageSize,
+  };
+}
+
+function positiveInteger(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

@@ -86,5 +86,6 @@ export function actorFromRequest(request: AuthenticatedRequest) {
     id: user.sub,
     role: user.role,
     providerId: user.providerId,
+    city: user.city,
   };
 }

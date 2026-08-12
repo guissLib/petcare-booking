@@ -6,15 +6,23 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { BusinessRuleError } from '../../../domain/business-rule.error';
+import { ConcurrencyError } from '../../../domain/concurrency.error';
 
-@Catch(BusinessRuleError)
+@Catch(BusinessRuleError, ConcurrencyError)
 export class DomainErrorFilter implements ExceptionFilter {
-  catch(error: BusinessRuleError, host: ArgumentsHost) {
+  catch(error: BusinessRuleError | ConcurrencyError, host: ArgumentsHost) {
     const response = host.switchToHttp().getResponse<Response>();
-    response.status(HttpStatus.BAD_REQUEST).json({
-      statusCode: HttpStatus.BAD_REQUEST,
+    const status =
+      error instanceof ConcurrencyError
+        ? HttpStatus.CONFLICT
+        : HttpStatus.BAD_REQUEST;
+    response.status(status).json({
+      statusCode: status,
       message: error.message,
-      error: 'Business Rule Error',
+      error:
+        error instanceof ConcurrencyError
+          ? 'Concurrency Error'
+          : 'Business Rule Error',
     });
   }
 }

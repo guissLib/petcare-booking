@@ -25,6 +25,14 @@ export class BookingOrmEntity {
   @PrimaryColumn({ type: 'varchar', length: 64 })
   id!: string;
 
+  @Column({
+    name: 'aggregate_version',
+    type: 'int',
+    unsigned: true,
+    default: 1,
+  })
+  aggregateVersion!: number;
+
   @Column({ name: 'user_id', type: 'varchar', length: 64 })
   userId!: string;
 
@@ -96,6 +104,15 @@ export class BookingOrmEntity {
   paymentReference!: string | null;
 
   @Column({
+    name: 'mock_payment_token',
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    unique: true,
+  })
+  mockPaymentToken!: string | null;
+
+  @Column({
     name: 'payment_expires_at',
     type: 'datetime',
     precision: 3,
@@ -131,6 +148,7 @@ export class BookingOrmEntity {
   static fromDomain(booking: BookingPrimitives) {
     const entity = new BookingOrmEntity();
     entity.id = booking.id;
+    entity.aggregateVersion = booking.aggregateVersion;
     entity.userId = booking.userId;
     entity.petId = booking.petId;
     entity.providerId = booking.providerId;
@@ -151,6 +169,7 @@ export class BookingOrmEntity {
     entity.paymentId = booking.paymentId;
     entity.paymentStatus = booking.paymentStatus;
     entity.paymentReference = booking.paymentReference ?? null;
+    entity.mockPaymentToken = booking.mockPaymentToken ?? null;
     entity.paymentExpiresAt = booking.paymentExpiresAt
       ? new Date(booking.paymentExpiresAt)
       : null;
@@ -164,6 +183,7 @@ export class BookingOrmEntity {
   toDomain(): BookingPrimitives {
     return {
       id: this.id,
+      aggregateVersion: this.aggregateVersion,
       userId: this.userId,
       petId: this.petId,
       providerId: this.providerId,
@@ -184,6 +204,7 @@ export class BookingOrmEntity {
       paymentId: this.paymentId,
       paymentStatus: this.paymentStatus,
       paymentReference: this.paymentReference ?? undefined,
+      mockPaymentToken: this.mockPaymentToken ?? undefined,
       paymentExpiresAt: this.paymentExpiresAt?.toISOString(),
       idempotencyKey: this.idempotencyKey ?? undefined,
       promotionId: this.promotionId ?? undefined,
